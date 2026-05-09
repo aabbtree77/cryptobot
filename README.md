@@ -2,14 +2,19 @@
 
 Cryptocurrency trading bot. Inspired by 
 
-Building Your Own Trading Bot in F# By Nikhil Barthwal, #LambdaConf2005. [Presentation video](https://www.youtube.com/watch?v=iyx2qIv8DDw&t=2498s), [code](https://github.com/nikhilbarthwal/Vyapari/blob/master/Vyapari/).
+Nikhil Barthwal. Building Your Own Trading Bot in F#. #LambdaConf2005. [Presentation video](https://www.youtube.com/watch?v=iyx2qIv8DDw&t=2498s), [code](https://github.com/nikhilbarthwal/Vyapari/blob/master/Vyapari/), [slides](https://www.lambdadays.org/static/upload/media/1686573948256988nikhilbarthwalbuildingyourowntradingbotinf.pdf).
 
 Instead of Gemini and Tradier I will use Binance. 
 
-Also Go instead of F#, with more emphasis on reliability than trading algorithms. Handling properly websocket connection drop, data duplication, that sort of stuff.
+Also Go instead of F#, with more emphasis on reliability than trading algorithms. Handling websocket connection drop, data duplication etc.
 
-This is the start of development (May 9th, 2026), just main.go with flow layout, graceful shutdown, 
-and a tiny simulation to test it all, for now. Nothing else done yet.
+This is the start (May 9th, 2026), only main.go with: 
+
+- goroutine for a websocket connection, 
+- main() with ctrl+c shutdown, 
+- tiny simulation/test.
+
+Nothing else done yet.
 
 ```bash
 mkdir cryptobot
