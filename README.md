@@ -8,13 +8,21 @@ Instead of Gemini and Tradier I will use Binance.
 
 Also Go instead of F#, with more emphasis on reliability than trading algorithms. Handling websocket connection drop, data duplication etc.
 
-This is the start (May 9th, 2026), only main.go with: 
+The code (May 11th, 2026):
 
-- goroutine for a websocket connection, 
-- main() with ctrl+c shutdown, 
-- tiny simulation/test.
+- is a deterministic event loop implemented with two goroutines: One for main.go, and the other for the websocket. Deterministic = no multiple workers mutating shared state, at least not yet...
 
-Nothing else done yet.
+- connects to "wss://stream.testnet.binance.vision/ws/btcusdt@trade"
+
+- reads the stream, formats data, and outputs it to the terminal.
+
+- handles ctrl+c shutdown.
+
+- "nmcli networking off" stops the stream which resumes after "nmcli networking on". 
+
+This is not good enough yet. When the internet/connection is lost, the TCP socket is still alive and conn.ReadMessage() blocks. No reconnect/disconnect event, the traffic resumes later. Websockets alone do NOT reliably detect dead connections. 
+
+# Sample Run
 
 ```bash
 mkdir cryptobot
@@ -22,65 +30,41 @@ cd cryptobot
 go mod init cryptobot
 mkdir -p cmd/bot
 nano cmd/bot/main.go
+go get github.com/gorilla/websocket
 ```
 
 ```bash
 go run ./cmd/bot
-2026/05/09 20:50:22 [main] runtime started
-2026/05/09 20:50:22 [ws] connecting
+go run ./cmd/bot
+2026/05/11 01:07:06 [main] runtime started
+2026/05/11 01:07:06 [ws] connecting to Binance Testnet
+2026/05/11 01:07:08 [ws] connected
 
 [main] event received: WsConnected
-2026/05/09 20:50:22 [runtime] websocket connected
+2026/05/11 01:07:08 [runtime] websocket connected
 
 [main] event received: MarketTrade
-2026/05/09 20:50:23 [runtime] trade processed: id=1001 symbol=BTCUSDT price=108500.10 qty=0.0010
+2026/05/11 01:07:08 [runtime] trade processed: id=1778450828372 symbol=BTCUSDT price=81055.66 qty=0.001000
 
 [main] event received: MarketTrade
-2026/05/09 20:50:24 [runtime] trade processed: id=1002 symbol=BTCUSDT price=108500.50 qty=0.0020
+2026/05/11 01:07:09 [runtime] trade processed: id=1778450829784 symbol=BTCUSDT price=81055.67 qty=0.002000
 
 [main] event received: MarketTrade
-2026/05/09 20:50:25 [runtime] duplicate trade ignored: id=1002
-2026/05/09 20:50:26 [ws] connection lost: server closed connection | reconnecting in 1s
+2026/05/11 01:07:09 [runtime] trade processed: id=1778450829803 symbol=BTCUSDT price=81055.67 qty=0.001190
+
+...
 
 [main] event received: MarketTrade
-2026/05/09 20:50:26 [runtime] trade processed: id=1003 symbol=BTCUSDT price=108501.25 qty=0.0040
-
-[main] event received: WsDisconnected
-2026/05/09 20:50:26 [runtime] websocket disconnected: server closed connection
-2026/05/09 20:50:27 [ws] connecting
-
-[main] event received: WsConnected
-2026/05/09 20:50:27 [runtime] websocket connected
+2026/05/11 01:07:22 [runtime] trade processed: id=1778450842204 symbol=BTCUSDT price=81206.44 qty=0.001230
 
 [main] event received: MarketTrade
-2026/05/09 20:50:28 [runtime] duplicate trade ignored: id=1001
+2026/05/11 01:07:22 [runtime] trade processed: id=1778450842629 symbol=BTCUSDT price=81206.45 qty=0.001000
 
 [main] event received: MarketTrade
-2026/05/09 20:50:29 [runtime] duplicate trade ignored: id=1002
-2026/05/09 20:50:30 [ws] connection lost: simulated EOF | reconnecting in 2s
-
-[main] event received: WsDisconnected
-2026/05/09 20:50:30 [runtime] websocket disconnected: simulated EOF
-2026/05/09 20:50:32 [ws] connecting
-
-[main] event received: WsConnected
-2026/05/09 20:50:32 [runtime] websocket connected
-
-[main] event received: MarketTrade
-2026/05/09 20:50:33 [runtime] duplicate trade ignored: id=1001
-
-[main] event received: MarketTrade
-2026/05/09 20:50:34 [runtime] duplicate trade ignored: id=1002
-
-[main] event received: MarketTrade
-2026/05/09 20:50:35 [runtime] duplicate trade ignored: id=1002
-
-[main] event received: MarketTrade
-2026/05/09 20:50:36 [runtime] duplicate trade ignored: id=1003
-2026/05/09 20:50:36 [ws] connection lost: server closed connection | reconnecting in 4s
-
-[main] event received: WsDisconnected
-2026/05/09 20:50:36 [runtime] websocket disconnected: server closed connection
-^C2026/05/09 20:50:36 [main] shutdown signal received
-2026/05/09 20:50:37 [main] shutdown complete
+2026/05/11 01:07:22 [runtime] trade processed: id=1778450842730 symbol=BTCUSDT price=81206.44 qty=0.000340
+^C2026/05/11 01:07:23 [main] shutdown signal received
+2026/05/11 01:07:23 [ws] shutdown requested
+2026/05/11 01:07:23 [main] shutdown complete
 ```
+
+

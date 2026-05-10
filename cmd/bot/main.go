@@ -2,14 +2,16 @@ package main
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 //
@@ -70,12 +72,16 @@ func (r *Runtime) Handle(ev Event) {
 		log.Printf("[runtime] websocket connected")
 
 	case WsDisconnected:
-		log.Printf("[runtime] websocket disconnected: %s", e.Err)
+		log.Printf(
+			"[runtime] websocket disconnected: %s",
+			e.Err,
+		)
 
 	case MarketTrade:
-		// -------------------------------------------------
+
+		// ---------------------------------------------
 		// Deduplication
-		// -------------------------------------------------
+		// ---------------------------------------------
 
 		if _, exists := r.SeenTradeIDs[e.TradeID]; exists {
 			log.Printf(
@@ -87,12 +93,12 @@ func (r *Runtime) Handle(ev Event) {
 
 		r.SeenTradeIDs[e.TradeID] = struct{}{}
 
-		// -------------------------------------------------
+		// ---------------------------------------------
 		// Main deterministic event processing
-		// -------------------------------------------------
+		// ---------------------------------------------
 
 		log.Printf(
-			"[runtime] trade processed: id=%d symbol=%s price=%.2f qty=%.4f",
+			"[runtime] trade processed: id=%d symbol=%s price=%.2f qty=%.6f",
 			e.TradeID,
 			e.Symbol,
 			e.Price,
@@ -102,37 +108,37 @@ func (r *Runtime) Handle(ev Event) {
 }
 
 //
-// WEBSOCKET SIMULATION
+// BINANCE TESTNET WEBSOCKET
 //
 
-type FakeBinanceWS struct {
+type BinanceWS struct {
 	out chan<- Event
 }
 
-func NewFakeBinanceWS(out chan<- Event) *FakeBinanceWS {
-	return &FakeBinanceWS{
+func NewBinanceWS(out chan<- Event) *BinanceWS {
+	return &BinanceWS{
 		out: out,
 	}
 }
 
-func (w *FakeBinanceWS) Run(ctx context.Context) {
+func (w *BinanceWS) Run(ctx context.Context) {
 	backoff := time.Second
 
 	for {
 		err := w.runConnection(ctx)
 
-		// -------------------------------------------------
-		// Graceful shutdown path
-		// -------------------------------------------------
+		// ---------------------------------------------
+		// Graceful shutdown
+		// ---------------------------------------------
 
 		if ctx.Err() != nil {
 			log.Printf("[ws] shutdown requested")
 			return
 		}
 
-		// -------------------------------------------------
-		// Reconnect path
-		// -------------------------------------------------
+		// ---------------------------------------------
+		// Reconnect handling
+		// ---------------------------------------------
 
 		log.Printf(
 			"[ws] connection lost: %v | reconnecting in %s",
@@ -147,88 +153,99 @@ func (w *FakeBinanceWS) Run(ctx context.Context) {
 		case <-time.After(backoff):
 		}
 
-		if backoff < 5*time.Second {
+		if backoff < 30*time.Second {
 			backoff *= 2
 		}
 	}
 }
 
-func (w *FakeBinanceWS) runConnection(
+func (w *BinanceWS) runConnection(
 	ctx context.Context,
 ) error {
-	log.Printf("[ws] connecting")
+	log.Printf("[ws] connecting to Binance Testnet")
+
+	const wsURL =
+		"wss://stream.testnet.binance.vision/ws/btcusdt@trade"
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		return fmt.Errorf("dial failed: %w", err)
+	}
+
+	defer conn.Close()
+
+	log.Printf("[ws] connected")
 
 	w.out <- WsConnected{
 		Time: time.Now(),
 	}
 
-	// -------------------------------------------------
-	// Fake Binance trade stream
-	// -------------------------------------------------
+	// ---------------------------------------------
+	// Read loop
+	// ---------------------------------------------
 
-	trades := []MarketTrade{
-		{
-			TradeID: 1001,
-			Symbol:  "BTCUSDT",
-			Price:   108500.10,
-			Qty:     0.001,
-			Time:    time.Now(),
-		},
-		{
-			TradeID: 1002,
-			Symbol:  "BTCUSDT",
-			Price:   108500.50,
-			Qty:     0.002,
-			Time:    time.Now(),
-		},
-
-		// intentional duplicate
-		{
-			TradeID: 1002,
-			Symbol:  "BTCUSDT",
-			Price:   108500.50,
-			Qty:     0.002,
-			Time:    time.Now(),
-		},
-
-		{
-			TradeID: 1003,
-			Symbol:  "BTCUSDT",
-			Price:   108501.25,
-			Qty:     0.004,
-			Time:    time.Now(),
-		},
-	}
-
-	for i, trade := range trades {
-
-		// -------------------------------------------------
-		// Simulate network delay
-		// -------------------------------------------------
-
+	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 
-		case <-time.After(1 * time.Second):
+		default:
 		}
 
-		// -------------------------------------------------
-		// Simulate random connection drop
-		// -------------------------------------------------
-
-		if i == 2 && rand.Intn(2) == 0 {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
 			w.out <- WsDisconnected{
-				Err:  "simulated EOF",
+				Err:  err.Error(),
 				Time: time.Now(),
 			}
 
-			return errors.New("simulated EOF")
+			return err
 		}
 
-		// -------------------------------------------------
-		// Emit event into central event loop
-		// -------------------------------------------------
+		// ---------------------------------------------
+		// Binance payload
+		// ---------------------------------------------
+
+		var payload struct {
+			EventType string `json:"e"`
+			EventTime int64  `json:"E"`
+
+			Symbol string `json:"s"`
+
+			TradeID int64 `json:"t"`
+
+			Price string `json:"p"`
+			Qty   string `json:"q"`
+		}
+
+		if err := json.Unmarshal(msg, &payload); err != nil {
+			log.Printf("[ws] bad payload: %v", err)
+			continue
+		}
+
+		price, err := strconv.ParseFloat(payload.Price, 64)
+		if err != nil {
+			log.Printf("[ws] bad price: %v", err)
+			continue
+		}
+
+		qty, err := strconv.ParseFloat(payload.Qty, 64)
+		if err != nil {
+			log.Printf("[ws] bad qty: %v", err)
+			continue
+		}
+
+		// ---------------------------------------------
+		// Normalize into internal event
+		// ---------------------------------------------
+
+		trade := MarketTrade{
+			TradeID: payload.TradeID,
+			Symbol:  payload.Symbol,
+			Price:   price,
+			Qty:     qty,
+			Time:    time.UnixMilli(payload.EventTime),
+		}
 
 		select {
 		case <-ctx.Done():
@@ -237,17 +254,6 @@ func (w *FakeBinanceWS) runConnection(
 		case w.out <- trade:
 		}
 	}
-
-	// -------------------------------------------------
-	// Simulate clean connection close
-	// -------------------------------------------------
-
-	w.out <- WsDisconnected{
-		Err:  "server closed connection",
-		Time: time.Now(),
-	}
-
-	return errors.New("server closed connection")
 }
 
 //
@@ -255,11 +261,10 @@ func (w *FakeBinanceWS) runConnection(
 //
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
 
-	// -------------------------------------------------
+	// ---------------------------------------------
 	// Graceful shutdown context
-	// -------------------------------------------------
+	// ---------------------------------------------
 
 	ctx, cancel := signal.NotifyContext(
 		context.Background(),
@@ -268,46 +273,43 @@ func main() {
 	)
 	defer cancel()
 
-	// -------------------------------------------------
+	// ---------------------------------------------
 	// Central event channel
-	// -------------------------------------------------
+	// ---------------------------------------------
 
 	eventChan := make(chan Event, 1024)
 
-	// -------------------------------------------------
+	// ---------------------------------------------
 	// Runtime state
-	// -------------------------------------------------
+	// ---------------------------------------------
 
 	runtime := NewRuntime()
 
-	// -------------------------------------------------
+	// ---------------------------------------------
 	// Websocket subsystem
-	// -------------------------------------------------
+	// ---------------------------------------------
 
-	ws := NewFakeBinanceWS(eventChan)
+	ws := NewBinanceWS(eventChan)
 
 	go ws.Run(ctx)
 
 	log.Printf("[main] runtime started")
 
-	// -------------------------------------------------
+	// ---------------------------------------------
 	// Central deterministic event loop
-	// -------------------------------------------------
+	// ---------------------------------------------
 
 	for {
 		select {
 
-		// ---------------------------------------------
-		// Graceful shutdown
-		// ---------------------------------------------
-
 		case <-ctx.Done():
+
 			log.Printf("[main] shutdown signal received")
 
-			// Here later:
+			// later:
 			// - flush sqlite
-			// - save snapshots
-			// - close websocket
+			// - persist snapshots
+			// - close files
 			// - drain queues
 
 			time.Sleep(500 * time.Millisecond)
@@ -316,11 +318,8 @@ func main() {
 
 			return
 
-		// ---------------------------------------------
-		// Central event processing
-		// ---------------------------------------------
-
 		case ev := <-eventChan:
+
 			fmt.Printf(
 				"\n[main] event received: %s\n",
 				ev.EventType(),
