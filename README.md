@@ -16,9 +16,11 @@ So far (May 11th, 2026) the program:
 
 - handles ctrl+c shutdown,
 
+- SeenTradeIDs map[int64]struct{} grows forever (no ring buffer, TTL, or LRU cache yet),
+
 - "nmcli networking off" stops the stream which resumes after "nmcli networking on". 
 
-**This is not good enough yet.** When the internet/connection is lost, the TCP socket is still alive and conn.ReadMessage() blocks. No reconnect/disconnect event, the traffic resumes later. Websockets alone do NOT reliably detect dead connections. 
+**This is not good enough.** When the internet/connection is lost, the TCP socket is still alive and conn.ReadMessage() blocks. No reconnect/disconnect event, the traffic resumes later. Websockets alone do NOT reliably detect dead connections. 
 
 # Sample Run
 
@@ -65,4 +67,34 @@ go run ./cmd/bot
 2026/05/11 01:07:23 [main] shutdown complete
 ```
 
+# Websockets 
+
+Pros:
+
+- low latency,
+- server push,
+- full duplex,
+- widely supported,
+- simple,
+- cheap.
+
+Cons:
+
+- disconnect constantly,
+- silent stale connections,
+- message bursts,
+- ordering edge cases,
+- reconnect complexity,
+- state resync pain.
+
+Better protocol?
+
+For HFT:
+
+- raw TCP,
+- FIX,
+- proprietary binary protocols,
+- multicast feeds.
+
+But: massively more difficult.
 
