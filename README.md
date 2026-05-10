@@ -4,23 +4,21 @@ Cryptocurrency trading bot. Inspired by
 
 Nikhil Barthwal. Building Your Own Trading Bot in F#. #LambdaConf2025. [Presentation video](https://www.youtube.com/watch?v=iyx2qIv8DDw&t=2498s), [code](https://github.com/nikhilbarthwal/Vyapari/blob/master/Vyapari/), [slides](https://www.lambdadays.org/static/upload/media/1686573948256988nikhilbarthwalbuildingyourowntradingbotinf.pdf).
 
-Instead of Gemini and Tradier I will use Binance. 
+Instead of Gemini and Tradier I will use Binance. Instead of F# -> Go, with more emphasis on reliability than trading algorithms. Handling websocket connection drop, data duplication...
 
-Also Go instead of F#, with more emphasis on reliability than trading algorithms. Handling websocket connection drop, data duplication etc.
+The code will rely on a deterministic event loop implemented with two goroutines: one for main.go, and the other for the websocket. Deterministic = no multiple workers mutating shared state.
 
-The code (May 11th, 2026):
+So far (May 11th, 2026) the program:
 
-- is a deterministic event loop implemented with two goroutines: One for main.go, and the other for the websocket. Deterministic = no multiple workers mutating shared state, at least not yet...
+- connects to "wss://stream.testnet.binance.vision/ws/btcusdt@trade",
 
-- connects to "wss://stream.testnet.binance.vision/ws/btcusdt@trade"
+- reads the stream, formats data, and outputs it to the terminal,
 
-- reads the stream, formats data, and outputs it to the terminal.
-
-- handles ctrl+c shutdown.
+- handles ctrl+c shutdown,
 
 - "nmcli networking off" stops the stream which resumes after "nmcli networking on". 
 
-This is not good enough yet. When the internet/connection is lost, the TCP socket is still alive and conn.ReadMessage() blocks. No reconnect/disconnect event, the traffic resumes later. Websockets alone do NOT reliably detect dead connections. 
+**This is not good enough yet.** When the internet/connection is lost, the TCP socket is still alive and conn.ReadMessage() blocks. No reconnect/disconnect event, the traffic resumes later. Websockets alone do NOT reliably detect dead connections. 
 
 # Sample Run
 
