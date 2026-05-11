@@ -4,11 +4,27 @@ Cryptocurrency trading bot. Inspired by
 
 Nikhil Barthwal. Building Your Own Trading Bot in F#. #LambdaConf2025. [Presentation video](https://www.youtube.com/watch?v=iyx2qIv8DDw&t=2498s), [code](https://github.com/nikhilbarthwal/Vyapari/blob/master/Vyapari/), [slides](https://www.lambdadays.org/static/upload/media/1686573948256988nikhilbarthwalbuildingyourowntradingbotinf.pdf).
 
-- Binance instead of Gemini and Tradier.
+This code:
 
-- Go instead of F#.
+- Go instead of F#,
 
-- More emphasis on reliability than trading algorithms. Reconnects, data duplication...
+- More emphasis on reliability than trading. Reconnects, data duplication...
+
+- Binance instead of Gemini and Tradier,
+
+- During an active connection, three live goroutines (main, ws, ping):
+
+  ```bash
+  main()
+  ├── main event loop
+  └── go ws.Run()
+
+  ws.Run()
+  └── reconnect loop
+      └── runConnection()
+          ├── websocket read loop
+          └── go ping loop
+  ```
 
 So far (May 12th, 2026, ~500 LOC in Go) the program:
 
@@ -30,29 +46,37 @@ The trades are stored in `SeenTrades` which is a fixed-capacity FIFO: newest IDs
 
 When the internet/connection is lost, the TCP socket is still alive and conn.ReadMessage() may block. Websockets alone do NOT reliably detect dead connections.
 
-The industry standard seems to be the following solution (Chatgpt5):
+The industry standard seems to be the following solution (ChatGPT-5):
 
-"
 Every 10s you send a websocket ping.
+
 Binance responds with pong.
+
 Every pong extends read deadline by 30s.
+
 If:
+
 internet dies
+
 WiFi freezes
+
 router blackholes packets
+
 Binance stalls
+
 upstream silently disappears
+
 TCP becomes half-open
 
 then eventually:
 
 no pong arrives
-read deadline expires
-ReadMessage() exits with timeout
-reconnect loop activates
 
-That is the canonical websocket liveness architecture.
-"
+read deadline expires
+
+ReadMessage() exits with timeout
+
+reconnect loop activates
 
 # Test 1: Connection Loss
 
