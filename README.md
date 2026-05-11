@@ -6,11 +6,11 @@ Nikhil Barthwal. Building Your Own Trading Bot in F#. #LambdaConf2025. [Presenta
 
 This code:
 
-- Go instead of F#,
+- Go instead of F#.
 
 - More emphasis on reliability than trading. Reconnects, data duplication...
 
-- Binance instead of Gemini and Tradier,
+- Binance instead of Gemini and Tradier.
 
 - During an active connection, three live goroutines (main, ws, ping):
 
@@ -268,7 +268,7 @@ active market traffic can keep connection alive even if pong is delayed
 The websocket is considered alive if anything is read before deadline.
 "
 
-# Appendix: Why Websockets
+# Appendix: Websockets
 
 Pros:
 
