@@ -1,10 +1,12 @@
 package main
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -52,16 +54,67 @@ func (e WsDisconnected) EventType() string {
 }
 
 //
+// FIXED-SIZE DEDUP CACHE
+//
+// Standard approach:
+// - bounded memory
+// - O(1) lookup
+// - O(1) eviction
+//
+
+type TradeDedup struct {
+	maxSize int
+	items   map[int64]*list.Element
+	order   *list.List
+}
+
+func NewTradeDedup(maxSize int) *TradeDedup {
+	return &TradeDedup{
+		maxSize: maxSize,
+		items:   make(map[int64]*list.Element),
+		order:   list.New(),
+	}
+}
+
+func (d *TradeDedup) Seen(id int64) bool {
+	_, exists := d.items[id]
+	return exists
+}
+
+func (d *TradeDedup) Add(id int64) {
+
+	// already exists
+	if _, exists := d.items[id]; exists {
+		return
+	}
+
+	// evict oldest
+	if d.order.Len() >= d.maxSize {
+		oldest := d.order.Front()
+
+		if oldest != nil {
+			oldID := oldest.Value.(int64)
+
+			delete(d.items, oldID)
+			d.order.Remove(oldest)
+		}
+	}
+
+	elem := d.order.PushBack(id)
+	d.items[id] = elem
+}
+
+//
 // RUNTIME
 //
 
 type Runtime struct {
-	SeenTradeIDs map[int64]struct{}
+	SeenTrades *TradeDedup
 }
 
 func NewRuntime() *Runtime {
 	return &Runtime{
-		SeenTradeIDs: make(map[int64]struct{}),
+		SeenTrades: NewTradeDedup(100_000),
 	}
 }
 
@@ -83,7 +136,7 @@ func (r *Runtime) Handle(ev Event) {
 		// Deduplication
 		// ---------------------------------------------
 
-		if _, exists := r.SeenTradeIDs[e.TradeID]; exists {
+		if r.SeenTrades.Seen(e.TradeID) {
 			log.Printf(
 				"[runtime] duplicate trade ignored: id=%d",
 				e.TradeID,
@@ -91,7 +144,7 @@ func (r *Runtime) Handle(ev Event) {
 			return
 		}
 
-		r.SeenTradeIDs[e.TradeID] = struct{}{}
+		r.SeenTrades.Add(e.TradeID)
 
 		// ---------------------------------------------
 		// Main deterministic event processing
@@ -121,11 +174,30 @@ func NewBinanceWS(out chan<- Event) *BinanceWS {
 	}
 }
 
+const (
+	pongWait   = 30 * time.Second
+	pingPeriod = 10 * time.Second
+	writeWait  = 5 * time.Second
+
+	maxBackoff = 30 * time.Second
+	minBackoff = 1 * time.Second
+
+	// reset reconnect penalty
+	// if connection survives long enough
+	stableConnectionTime = 1 * time.Minute
+)
+
 func (w *BinanceWS) Run(ctx context.Context) {
-	backoff := time.Second
+
+	backoff := minBackoff
 
 	for {
+
+		started := time.Now()
+
 		err := w.runConnection(ctx)
+
+		aliveFor := time.Since(started)
 
 		// ---------------------------------------------
 		// Graceful shutdown
@@ -134,6 +206,23 @@ func (w *BinanceWS) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			log.Printf("[ws] shutdown requested")
 			return
+		}
+
+		// ---------------------------------------------
+		// Reset backoff after stable connection
+		// ---------------------------------------------
+
+		if aliveFor >= stableConnectionTime {
+			backoff = minBackoff
+		}
+
+		// ---------------------------------------------
+		// Emit disconnect event
+		// ---------------------------------------------
+
+		w.out <- WsDisconnected{
+			Err:  err.Error(),
+			Time: time.Now(),
 		}
 
 		// ---------------------------------------------
@@ -147,14 +236,18 @@ func (w *BinanceWS) Run(ctx context.Context) {
 		)
 
 		select {
+
 		case <-ctx.Done():
 			return
 
 		case <-time.After(backoff):
 		}
 
-		if backoff < 30*time.Second {
-			backoff *= 2
+		// exponential backoff
+		backoff *= 2
+
+		if backoff > maxBackoff {
+			backoff = maxBackoff
 		}
 	}
 }
@@ -162,12 +255,21 @@ func (w *BinanceWS) Run(ctx context.Context) {
 func (w *BinanceWS) runConnection(
 	ctx context.Context,
 ) error {
+
 	log.Printf("[ws] connecting to Binance Testnet")
 
-	const wsURL =
-		"wss://stream.testnet.binance.vision/ws/btcusdt@trade"
+	const wsURL = "wss://stream.testnet.binance.vision/ws/btcusdt@trade"
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+
+		NetDialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+	}
+
+	conn, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
 	}
@@ -181,25 +283,94 @@ func (w *BinanceWS) runConnection(
 	}
 
 	// ---------------------------------------------
+	// Read deadline
+	// ---------------------------------------------
+
+	if err := conn.SetReadDeadline(
+		time.Now().Add(pongWait),
+	); err != nil {
+		return err
+	}
+
+	// ---------------------------------------------
+	// Pong extends liveness
+	// ---------------------------------------------
+
+	conn.SetPongHandler(func(string) error {
+
+		return conn.SetReadDeadline(
+			time.Now().Add(pongWait),
+		)
+	})
+
+	// ---------------------------------------------
+	// Ping loop
+	// ---------------------------------------------
+
+	errChan := make(chan error, 1)
+
+	go func() {
+
+		ticker := time.NewTicker(pingPeriod)
+		defer ticker.Stop()
+
+		for {
+
+			select {
+
+			case <-ctx.Done():
+				return
+
+			case <-ticker.C:
+
+				conn.SetWriteDeadline(
+					time.Now().Add(writeWait),
+				)
+
+				err := conn.WriteMessage(
+					websocket.PingMessage,
+					nil,
+				)
+
+				if err != nil {
+
+					select {
+					case errChan <- fmt.Errorf(
+						"ping failed: %w",
+						err,
+					):
+					default:
+					}
+
+					return
+				}
+			}
+		}
+	}()
+
+	// ---------------------------------------------
 	// Read loop
 	// ---------------------------------------------
 
 	for {
+
 		select {
+
 		case <-ctx.Done():
 			return ctx.Err()
+
+		case err := <-errChan:
+			return err
 
 		default:
 		}
 
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
-			w.out <- WsDisconnected{
-				Err:  err.Error(),
-				Time: time.Now(),
-			}
-
-			return err
+			return fmt.Errorf(
+				"read failed: %w",
+				err,
+			)
 		}
 
 		// ---------------------------------------------
@@ -223,13 +394,19 @@ func (w *BinanceWS) runConnection(
 			continue
 		}
 
-		price, err := strconv.ParseFloat(payload.Price, 64)
+		price, err := strconv.ParseFloat(
+			payload.Price,
+			64,
+		)
 		if err != nil {
 			log.Printf("[ws] bad price: %v", err)
 			continue
 		}
 
-		qty, err := strconv.ParseFloat(payload.Qty, 64)
+		qty, err := strconv.ParseFloat(
+			payload.Qty,
+			64,
+		)
 		if err != nil {
 			log.Printf("[ws] bad qty: %v", err)
 			continue
@@ -248,6 +425,7 @@ func (w *BinanceWS) runConnection(
 		}
 
 		select {
+
 		case <-ctx.Done():
 			return ctx.Err()
 
@@ -263,7 +441,7 @@ func (w *BinanceWS) runConnection(
 func main() {
 
 	// ---------------------------------------------
-	// Graceful shutdown context
+	// Graceful shutdown
 	// ---------------------------------------------
 
 	ctx, cancel := signal.NotifyContext(
@@ -300,17 +478,12 @@ func main() {
 	// ---------------------------------------------
 
 	for {
+
 		select {
 
 		case <-ctx.Done():
 
 			log.Printf("[main] shutdown signal received")
-
-			// later:
-			// - flush sqlite
-			// - persist snapshots
-			// - close files
-			// - drain queues
 
 			time.Sleep(500 * time.Millisecond)
 
