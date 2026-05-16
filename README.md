@@ -270,7 +270,7 @@ The websocket is considered alive if anything is read before deadline.
 
 # Actor Alternative
 
-I have asked ChatGTP to do the actor-ish implementation as well, the code (albeit with heavy comments) increases from 500 LOC to 1000 LOC. The hope is that actors are easier to understand and debug, but reconnection seems to demand some specific per actor initialization, and the error handling without all that Erlang OTP jungle remains moot. It is not clear if actors are the way, in Go in general, and here.
+I have asked ChatGTP to do the actor-ish implementation as well, the code (albeit with heavy comments) increases from 500 LOC to 1000 LOC. The hope is that actors are easier to understand and debug, but reconnection seems to demand some specific per actor initialization, and the error handling without all that Erlang OTP jungle remains moot. It is not clear if actors are the way, in Go in general, and with this websocket reconnection problem in particular.
 
 Read the code review below.
 
